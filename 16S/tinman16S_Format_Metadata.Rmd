@@ -11,64 +11,16 @@ library("janitor")
 library("tidyverse")
 ```
 
-## Check Consistency of Metadata Files
-
-Metadata for 16S samples is found in two files (cohort 1 and 2), as well as in
-a single (combined) metadata file. Need to double-check information is consistent
-across both files.
-
-```{r metadata-files}
-mappingFileList <- c("cohort1" = "METADATACOHORT1FINAL.xlsx",
-                     "cohort2" = "METADATACOHORT2FINAL.xlsx",
-                     "combined" = "METADATAFINAL.xlsx")
-
-mappingFiles <- map(paste0("../documents/original_documents/16S/",
-                           mappingFileList),
-                    read_xlsx)
-names(mappingFiles) <- names(mappingFileList)
-```
-
-```{r check-that-file-info-matches, echo=FALSE}
-identical(mappingFiles$cohort2, mappingFiles$combined)
-# Cohort2 file and Combined file are the same
-
-cohort2FileFiltered <- mappingFiles$cohort2 %>% 
-  filter(aample_name %in% mappingFiles$cohort1$aample_name)
-dim(cohort2FileFiltered) # 29 x 26
-
-dim(mappingFiles$cohort1) # 30 x 25
-
-# One sample from cohort 1 map is missing from cohort 2 (probably the sample
-#   named "053 E2", because it looks like excel converted it into "5.60E+03"
-#   in the cohort 1 map file).
-
-# One variable name is also missing, what is it?
-cohortVars <- map(mappingFiles, colnames)
-missingVar <- cohortVars$cohort2[!cohortVars$cohort2 %in% cohortVars$cohort1]
-# Carbapenems
-
-# conform oddly named sample data matches my assumption
-cohort1WeirdSample <- mappingFiles$cohort1 %>% 
-  filter(aample_name == "5.60E+03") %>% 
-  select(-aample_name)
-cohort2WeirdSample <- mappingFiles$cohort2 %>% 
-  filter(aample_name == "053 E2") %>% 
-  select(-c(aample_name, Carbapenems))
-identical(cohort1WeirdSample, cohort2WeirdSample)
-# TRUE
-```
-
-It appears that the data in METADATAFINAL.xlsx does match the data from the 
-individual cohort metadata files. Now the metadata can be formatted.
-
 ## Format Metadata
 
+The most current 16S metadata is found in the Excel file METADATAFINAL_16S.xlsx
+
 ```{r format-combined-metadata, echo=FALSE}
-rawMap <- mappingFiles$combined # 79 x 26
+rawMap <- read_xlsx("../documents/original_documents/16S/METADATAFINAL_16S.xlsx") # 77 x 26
 
 #----- Remove Blank Columns & Extra Rows -----#
 rawMapNoBlanks <- rawMap %>% 
-  filter(!is.na(Neutropenic)) # 76 x 26 (3 rows removed)
+  filter(!is.na(Neutropenic)) # 76 x 26 (1 row removed ("blank"))
 
 #----- Format Column Names -----#
 mapNewCols <- rawMapNoBlanks %>% 
@@ -78,7 +30,7 @@ mapNewCols <- rawMapNoBlanks %>%
 #----- Change Factor Levels for Important Variables -----#
 
 # important variables are:
-#   "Neutropenic"
+#   "neutropenic"
 #   "pre_post"
 table(mapNewCols$neutropenic) # 56 Control, 20 Neutropenic
 table(mapNewCols$pre_post) # 38 post, 38 pre
@@ -93,6 +45,6 @@ mapFinal %>%
 ```
 
 ```{r save-mapfinal, eval=FALSE}
-saveRDS(mapFinal, "../data/RData_Objects/16S/metadataFinal.RDS")
+saveRDS(mapFinal, "../data/RDataObjects/16S/metadataFinal.RDS")
 ```
 
