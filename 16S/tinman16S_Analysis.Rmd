@@ -712,9 +712,6 @@ control samples when using both UniFrac and weighted UniFrac. It is also
 significant to the grouping of neutropenic samples when using the UniFrac
 metric only.
 
-As in alpha diversity, this may be due to the difference in the communities
-following antibiotics treatment.
-
 <br>
 <br>
 
