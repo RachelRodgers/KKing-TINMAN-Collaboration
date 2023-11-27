@@ -17,7 +17,7 @@ knitr::opts_chunk$set(fig.width=8,
 knitr::opts_knit$set(root.dir = "..")
 ```
 
-```{r load-libraries, message=FALSE}
+```{r load-libraries, message=FALSE,}
 library("shiny")
 library("knitr")
 library("janitor")
@@ -107,8 +107,20 @@ sampleDataNewNames <- sampleData %>%
 # Add reads per sample from the phyloseq object
 readsPerSample <- sample_sums(physeqRaw)
 
-sampleDataFinal <- sampleDataNewNames %>% 
+sampleDataCounts <- sampleDataNewNames %>% 
   mutate("readsPerSample" = readsPerSample[sample_name])
+
+# Add unique_id to tell which samples belong to which patient (each patient
+#   has two samples: a pre and post sample)
+#   According to email, A/B/C are the first timepoints and D/E/F are second
+sampleDataUniqueID <- sampleDataCounts %>%
+  mutate(unique_id = str_extract(string = sample_name,
+                                 pattern = "[:digit:]+"),
+         timepoint_id = str_extract(string = sample_name,
+                                    pattern = "[A-F]{1}.?[:digit:]{1}$")) %>% 
+  select(sample_name, unique_id, timepoint_id, pre_post, neutropenic, everything())
+
+sampleDataFinal <- sampleDataUniqueID
 
 row.names(sampleDataFinal) <- sampleDataFinal$sample_name
 ```
@@ -558,6 +570,68 @@ alphaPrePostArr
 
 Richness is significantly higher in the "pre" time point for both the control and
 neutropenic groups. This may be expected following antibiotics.
+
+<br>
+<br>
+
+--
+
+<br>
+<br>
+
+<h4> Change in Alpha Diversity Over Time: Control vs. Neutropenic </h4>
+
+<br>
+<br>
+
+Here we are looking to see if the change in alpha diversity from the Pre to Post
+timepoint is significantly different in the control samples versus the 
+neutropenic samples. In this plot, each point represents the change in richness
+for a given sample.
+
+```{r calculate-change-in-alpha-diversity}
+deltaMetrics <- list("Richness" = "observed",
+                     "Shannon Diversity" = "diversity_shannon")
+
+MakeDeltaDF <- function(metric) {
+  
+  newColName <- paste0("delta_", metric)
+  
+  deltaDF <- sampleDataBacteria %>%
+    select(unique_id, !!sym(metric), pre_post, neutropenic) %>%
+    pivot_wider(id_cols = c(unique_id, neutropenic),
+                names_from = pre_post,
+                values_from = !!sym(metric)) %>%
+    mutate(!!newColName := abs(POST - PRE))
+  
+  return(deltaDF)
+}
+
+deltaAlphaDFList <- map(.x = deltaMetrics, .f = MakeDeltaDF)
+
+deltaAlphaPlots <- pmap(.l = list(df = deltaAlphaDFList,
+                                  yVar = list("Richness" = "delta_observed",
+                                              "Shannon Diversity" = "delta_diversity_shannon"),
+                                  label_y = paste("Change in",
+                                                  names(deltaAlphaDFList)),
+                                  plotTitle = paste("Change in",
+                                                    names(deltaAlphaDFList),
+                                                    "Over Time")),
+                        .f = PrettyBox,
+                        xVar = "neutropenic",
+                        statMethod = "wilcox.test",
+                        colorVals = groupColors)
+
+deltaAlphaPlotsArr <- ggarrange(plotlist = deltaAlphaPlots,
+                                nrow = 1, ncol = 2)
+deltaAlphaPlotsArr
+```
+
+<br>
+<br>
+
+The average change in richness and Shannon diversity over time does not vary
+significantly between control and neutropenic samples.
 
 <br>
 <br>
