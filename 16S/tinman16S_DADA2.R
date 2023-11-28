@@ -18,6 +18,10 @@ taxonomyDBPath <- "/mnt/pathogen1/rrodgers/databases/dada2_taxonomy"
 rdpDB <- file.path(taxonomyDBPath, "rdp_train_set_18.fa.gz")
 rdpDBSpecies <- file.path(taxonomyDBPath, "rdp_species_assignment_18.fa.gz")
 
+# SILVA v138.1
+silvaDB <- file.path(taxonomyDBPath, "silva_v138.1/silva_nr99_v138.1_train_set.fa.gz")
+silvaDBSpecies <- file.path(taxonomyDBPath, "silva_v138.1/silva_species_assignment_v138.1.fa.gz")
+
 #----- Analyze Read Quality Data -----#
 
 # Only the R1 files are needed:
@@ -74,6 +78,11 @@ taxaRDP <- assignTaxonomy(sequenceTableNoChimeras, rdpDB, multithread = TRUE)
 colnames(taxaRDP) <- taxaRankNamesTrunc
 taxaRDPPlus <- addSpecies(taxaRDP, rdpDBSpecies)
 
+# SILVA
+taxaSilva <- assignTaxonomy(sequenceTableNoChimeras, silvaDB, multithread = TRUE)
+colnames(taxaSilva) <- taxaRankNamesTrunc
+taxaSilvaPlus <- addSpecies(taxaSilva, silvaDBSpecies)
+
 #----- Construct Phylogenetic Tree -----#
 
 # Get the sequences from the sequence table
@@ -102,6 +111,11 @@ dir.create(physeqDir)
 ps0.rdp <- phyloseq(otu_table(sequenceTableNoChimeras, taxa_are_rows = FALSE),
                     tax_table(taxaRDPPlus), phy_tree(fitGTR$tree))
 saveRDS(ps0.rdp, file.path(physeqDir, "ps0.rdp18_single.RDS"))
+
+# SILVA
+ps0.silva <- phyloseq(otu_table(sequenceTableNoChimeras, taxa_are_rows = FALSE),
+                      tax_table(taxaSilvaPlus), phy_tree(fitGTR$tree))
+saveRDS(ps0.silva, file.path(physeqDir, "ps0.silva138_single.RDS"))
 
 #----- Save Data -----#
 
