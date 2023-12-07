@@ -1,5 +1,5 @@
 ---
-title: "TINMAN 16S Analysis with SILVA"
+title: "TINMAN WGS Analysis"
 author: "Rachel Rodgers"
 date: "`r Sys.Date()`"
 output: 
@@ -8,6 +8,21 @@ output:
 runtime: shiny
 ---
 
+## Overview {.tabset}
+
+In this script I will be analyzing the bacterial microbiome using the data
+generated from MetaPhlAn3.
+
+Similar to the 16S analysis, we are interested in investigating changes in the 
+gut  bacterial microbiome in patients who developed neutropenia after antibiotics
+(10 patients), and comparing to matched controls (29 patients). Each patient has
+a "pre" and "post" time point. This data set will be analyzed in several
+different groupings:
+
+  1. Neutropenic vs Controls in the full cohort (time points combined)
+  2. Neutropenic vs Controls in the "pre" and "post" time points only
+  3. "Pre" vs "Post" timepoints in the Control or Neutropenic group only
+  
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(fig.width=8,
                       fig.height=6,
@@ -20,118 +35,83 @@ knitr::opts_knit$set(root.dir = "..")
 ```{r load-libraries, message=FALSE}
 library("here")
 library("shiny")
-library("knitr")
-library("janitor")
+library("plotly")
 library("phyloseq")
-library("vegan")
-library("gridExtra")
+library("DESeq2")
 library("microbiome")
 library("data.table")
-library("ggrepel")
 library("ggpubr")
-library("scales")
-library("DT")
-library("plotly")
-library("FSA")
-library("DESeq2")
+library("ggrepel")
+library("janitor")
+library("vegan")
 library("tidyverse")
+
 
 source(here("shared_R_scripts/Helper_Functions.R"))
 source(here("shared_R_scripts/BoxPlotHelpers.R"))
 source(here("shared_R_scripts/BiomarkerHelpers.R"))
 
 options(shiny.sanitize.errors = FALSE)
+
+inputPath <- "../documents/original_documents/WGS/Deliverables/metaphlan3"
 ```
 
-## Overview {.tabset}
-
-In this analysis, we are interested in investigating changes in the gut 
-bacterial microbiome in patients who developed neutropenia after antibiotics
-(10 patients), and comparing to matched controls (29 patients). Each patient has
-a "pre" and "post" time point. This data set will be analyzed in several
-different groupings:
-
-  1. Neutropenic vs Controls in the full cohort (time points combined)
-  2. Neutropenic vs Controls in the "pre" and "post" time points only
-  3. "Pre" vs "Post" timepoints in the Control or Neutropenic group only
-  
-Taxonomic assignment to the 16S data was made using DADA2 with the SILVA NR 99 
-v138.1 training set.
-  
-```{r physeqRaw, results='hide'}
-physeqRaw <- readRDS(here("../data/RDataObjects/16S/physeqObjects/ps0.silva138_single.RDS"))
-physeqRaw # 1823 x 76
+```{r physeqRawEstCounts, results='hide'}
+# "Estimated Counts"
+physeqRawEstCounts <- import_biom(here(file.path(inputPath,
+                                                 "metaphlan3.bacteria.EstCount.biom")))
+physeqRawEstCounts # 514 x 78
 ```
 
-```{r sampleData, results='hide'}
-sampleData <- readRDS(here("../data/RDataObjects/16S/metadataFinal.RDS"))
+```{r modify-taxonomy-table, results='hide'}
+# format column names and remove prefix strings in rank names
+taxonomyTableOrig <- as.data.frame(as(tax_table(physeqRawEstCounts), "matrix"))
 
-# do we have the same number of samples in sample data and ps obj?
-metadataSamples <- sampleData$sample_name
-length(metadataSamples) # 76 samples
+colnames(taxonomyTableOrig) <- c("Kingdom", "Phylum", "Class",
+                                 "Order", "Family", "Genus",
+                                 "Species")
 
-psSamples <- sample_names(physeqRaw)
-length(psSamples) # 76 samples
+# clean up strings
+removePatterns <- paste0("^", c("k", "p", "c", "o", "f", "g", "s"), "_+")
+finalPattern <- paste0(removePatterns, collapse = "|")
 
-# which samples in one set are missing from the other:
-  # in the physeq object but not in the metadata:
-missingFromMetadata <- psSamples[!psSamples %in% metadataSamples]
-missingFromMetadata
-  # in the metadata but not in the physeq object:
-missingFromPS <- metadataSamples[!metadataSamples %in% psSamples]
-missingFromPS
+taxonomyTableModified <- taxonomyTableOrig %>% 
+  mutate(across(everything(), ~ str_remove(string = .x,
+                                           pattern = finalPattern)))
+taxTableFinal <- as.matrix(taxonomyTableModified)
 
-# For TINMANVCH* sample names, add underscores.
-#   Then, modify the remaining name changes manually:
-#     033E = 033E2
-#     053E2 = 053D2
-#     041E = 041E_2
-#     075A2 = 075A1
-tinmanSampleLUT <- sampleData %>% 
-  filter(grepl("^TINMAN", sample_name)) %>% 
-  select(sample_name) %>% 
-  dplyr::rename(old_sample_name = sample_name) %>% 
-  mutate(first = str_extract(old_sample_name, "^[:alpha:]+"),
-         second = str_extract(old_sample_name, "[:digit:]+"),
-         third = str_extract(old_sample_name, "[:alnum:]{2}$")) %>% 
-  unite(new_sample_name, first, second, third) %>% 
-  deframe()
-
-sampleDataNewNames <- sampleData %>% 
-  mutate(sample_name = case_when(sample_name %in% names(tinmanSampleLUT) ~ tinmanSampleLUT[sample_name],
-                                 sample_name == "033E" ~ "033E_2",
-                                 sample_name == "053E2" ~ "053D2",
-                                 sample_name == "041E" ~ "041E_2",
-                                 sample_name == "075A2" ~ "075A1",
-                                 TRUE ~ sample_name)) %>% 
-  as.data.frame()
-
-# Add reads per sample from the phyloseq object
-readsPerSample <- sample_sums(physeqRaw)
-
-sampleDataCounts <- sampleDataNewNames %>% 
-  mutate("readsPerSample" = readsPerSample[sample_name])
-
-# Add unique_id to tell which samples belong to which patient (each patient
-#   has two samples: a pre and post sample)
-#   According to email, A/B/C are the first timepoints and D/E/F are second
-#   except for samples 53, 61, 69, and 70, where A/B/C is on Abx, and D/E/F is
-#   off abx long after treatment
-sampleDataUniqueID <- sampleDataCounts %>%
-  mutate(unique_id = str_extract(string = sample_name,
-                                 pattern = "[:digit:]+"),
-         timepoint_id = str_extract(string = sample_name,
-                                    pattern = "[A-F]{1}.?[:digit:]{1}$")) %>% 
-  select(sample_name, unique_id, timepoint_id, pre_post, neutropenic, everything())
-
-sampleDataFinal <- sampleDataUniqueID
-
-row.names(sampleDataFinal) <- sampleDataFinal$sample_name
+# add back to phyloseq object
+physeqModifiedTax <- physeqRawEstCounts
+physeqModifiedTax@tax_table <- NULL
+physeqModifiedTax <- merge_phyloseq(physeqModifiedTax,
+                                    tax_table(taxTableFinal))
 ```
 
-```{r physeqMerged, results='hide'}
-physeqMerged <- merge_phyloseq(physeqRaw, sample_data(sampleDataFinal))
-physeqMerged # 1823 taxa x 76 samples
+```{r merge-sample-data, results='hide'}
+sampleData <- readRDS(here("../data/RDataObjects/WGS/metadataFinal.RDS"))
+
+# phyloseq sample names are slightly different due to hyphenation
+phyloseqNames <- data.frame(phyloseqNames = sample_names(physeqRawEstCounts)) %>% 
+  mutate(phyloseqNamesModified = str_remove_all(phyloseqNames, "-"))
+
+sampleDataMerged <- base::merge(phyloseqNames, sampleData,
+                                by.x = "phyloseqNamesModified",
+                                by.y = "sample_name",
+                                all = TRUE)
+
+# add reads per sample from the phyloseq object
+readsPerSample <- sample_sums(physeqRawEstCounts)
+
+sampleDataFinal <- sampleDataMerged %>% 
+  mutate("readsPerSample" = readsPerSample[phyloseqNames])
+
+row.names(sampleDataFinal) <- sampleDataFinal$phyloseqNames
+```
+
+```{r physeqBacteria, results='hide'}
+physeqBacteria <- merge_phyloseq(physeqModifiedTax,
+                                 sample_data(sampleDataFinal))
+physeqBacteria # 514 taxa x 78 samples
 ```
 
 ```{r set-values-for-analyses}
@@ -155,19 +135,6 @@ columnLUT <- reactiveValues("all_samples" = "neutropenic",
 
 <br>
 
-Let's get an overview of the sample distribution by group and time point:
-
-```{r sampleOverview}
-sampleOverview <- sampleDataFinal %>% 
-  tabyl(neutropenic, pre_post)
-
-# options list dom = 't' means only the table shows (not the search or length menu)
-DT::renderDataTable(sampleOverview, rownames = FALSE, options = list(dom = 't'))
-```
-
-<br>
-<br>
-
 <h4>**Read Count Distributions**</h4>
 
 <br>
@@ -179,24 +146,24 @@ significant differences could affect the outcome of the ecological measures.
 ```{r frequency-of-read-counts}
 # make df of reads/sample
 readsPerSampleDF <- sampleDataFinal %>% 
-  select(sample_name, neutropenic, pre_post, readsPerSample) %>% 
+  select(phyloseqNames, neutropenic, pre_post, readsPerSample) %>% 
   arrange(readsPerSample)
 
 # apply levels to samples so bar graph will show increasing reads/sample
-sampleLevels <- pull(readsPerSampleDF, sample_name)
-readsPerSampleDF$sample_name <- factor(readsPerSampleDF$sample_name,
-                                       levels = sampleLevels)
+sampleLevels <- pull(readsPerSampleDF, phyloseqNames)
+readsPerSampleDF$phyloseqNames <- factor(readsPerSampleDF$phyloseqNames,
+                                         levels = sampleLevels)
 ```
 
 ```{r summaryReadDist}
 summary(readsPerSampleDF$readsPerSample)
 ```
 
-Reads/sample range from 1,521 to 45,885 with an average of 28,826.
+Reads/sample range from 188,192 to 28,407,947 with an average of 12,557,903.
 
 ```{r readDistPlot}
 readDistPlot <- ggplot(readsPerSampleDF,
-                       aes(x = sample_name, y = readsPerSample,
+                       aes(x = phyloseqNames, y = readsPerSample,
                            fill = neutropenic)) +
   scale_fill_manual(values = groupColors) +
   geom_bar(stat = "identity") +
@@ -262,10 +229,8 @@ readDistBoxByGroup
 
 <br>
 
-When looking at the time points within the individual groups, there is a significant
-difference in average reads between the Pre and Post time points for the
-control samples. This will have to be kept in mind if any significant differences
-are found when comparing these two groups, as the communities may be sampled
+When looking at the time points within the individual groups, there is no 
+significant difference in average reads between the Pre and Post time points.
 unevenly.
 
 <br>
@@ -277,34 +242,9 @@ unevenly.
 
 <br>
 
-Non-bacterial taxa will be removed from the data set.
+Which bacterial taxa are present in the data set?
 
 <br>
-
-```{r filter-non-bacterial, results='hide'}
-taxonomyTable <- as.data.frame(as(tax_table(physeqMerged), "matrix"))
-uniqueTaxa <- map(taxonomyTable, unique)
-taxTableMerged <- mutate(taxonomyTable, "KP" = paste(Kingdom, Phylum, sep = "_"))
-unique(taxTableMerged$KP)
-
-physeqBacteria <- subset_taxa(physeqMerged,
-                              Kingdom == "Bacteria" &
-                                Phylum != "Cyanobacteria" &
-                                Phylum != "Chloroplast")
-# any samples depleted?
-any(sample_sums(physeqBacteria) == 0) # FALSE
-physeqBacteria # 1809 x 76
-
-sampleDataBacteria <- as(sample_data(physeqBacteria), "data.frame")
-```
-
-After dropping non-bacterial taxa, the total number of taxa are reduced from 
-1,823 to 1,809.
-
-Now checking the prevalence and abundance of different bacterial families present.
-It may be useful to identify and remove low prevalence/low abundance taxa from
-the data set to help with downstream analysis, specifically when looking for
-biomarkers.
 
 ```{r phylaPrevalence}
 phylaPrevalence <- TaxRankPrevalence(physeqBacteria, "Phylum")
@@ -337,6 +277,8 @@ phylaPrevalencePlot
 #   control group only (neutropenic == "Control")
 #   neutropenic group only (neutropenic == "Neutropenic")
 
+sampleDataBacteria <- as(sample_data(physeqBacteria), "data.frame")
+
 subsetNames <- c("pre_timepoint",
                  "post_timepoint",
                  "control_samples",
@@ -364,7 +306,7 @@ for (i in 1:length(subsetNames)) {
   
   keepSamples <- sampleDataBacteria %>% 
     filter(!!sym(currentColumn) == currentCondition) %>% 
-    pull(sample_name)
+    pull(phyloseqNames)
   
   psSubset <- prune_samples(keepSamples, physeqBacteria) %>% 
     RemoveMissingTaxa()
@@ -581,6 +523,9 @@ alphaPrePostArr
 Richness is significantly higher in the "pre" time point for both the control and
 neutropenic groups. This may be expected following antibiotics.
 
+Evenness and Shanon Diversity are significantly higher in the "pre" time point 
+for the neutropenic samples.
+
 <br>
 <br>
 
@@ -613,6 +558,7 @@ MakeDeltaDF <- function(metric) {
                 names_from = pre_post,
                 values_from = !!sym(metric)) %>%
     mutate(!!newColName := abs(POST - PRE))
+
   
   return(deltaDF)
 }
@@ -622,7 +568,7 @@ deltaAlphaDFList <- map(.x = deltaMetrics, .f = MakeDeltaDF)
 deltaAlphaPlots <- pmap(.l = list(df = deltaAlphaDFList,
                                   yVar = list("Richness" = "delta_observed",
                                               "Shannon Diversity" = "delta_diversity_shannon"),
-                                  label_y = paste("Change in",
+                                  label_y = paste("Absolute Change in",
                                                   names(deltaAlphaDFList)),
                                   plotTitle = paste("Change in",
                                                     names(deltaAlphaDFList),
@@ -656,11 +602,11 @@ is quantified through "association" coefficients - similarity or distance
 measures. It describes how similar/dissimilar samples' communities are to one 
 another. We view these distances with ordination plots such as PCoA.
 
-A common distance measure is the UniFrac distance, which is a measure that 
-considers the phylogenetic relationships between bacterial taxa. A community of 
-more closely-related taxa is less diverse than a community of distantly-related 
-taxa. The weighted UniFrac measure additionally accounting for the relative 
-abundance of each taxa. 
+Because this data set lacks a phylogenetic tree, I will be using the Bray-Curtis
+dissimilarity metric to quantify the compositional dissimilarity between
+communities. This metric is based on the counts of different species in each 
+group being compared.
+
 
 <br>
 <br>
@@ -678,12 +624,6 @@ fluidRow(
                                    "Control" = "control_samples",
                                    "Neutropenic" = "neutropenic_samples"),
                        selected = "All"),
-           # select distance measure
-           selectInput(inputId = "betaDistance",
-                       label = "Distance Measure",
-                       choices = c("UniFrac" = "unifrac",
-                                   "Weighted UniFrac" = "wunifrac"),
-                       selected = "UniFrac"),
            # show ellipses?
            checkboxInput(inputId = "betaEllipsesBool",
                          label = "Show Confidence Ellipses",
@@ -708,14 +648,6 @@ SelectedPhyseq <- reactive({
   return(selectedPhyseq)
 })
 
-SelectedDistance <- reactive({
-  selectedDistance <- input$betaDistance
-  if (is.null(selectedDistance)) {
-    selectedDistance <- "unifrac"
-  }
-  return(selectedDistance)
-})
-
 
 #----- Calculate Ordination -----#
 
@@ -724,7 +656,7 @@ CalculateOrdination <- eventReactive(input$betaUpdate, {
     set.seed(11643764)
     ordinationObj <- ordinate(physeqSubsetList[[SelectedPhyseq()]],
                               method = "PCoA",
-                              distance = SelectedDistance())
+                              distance = "bray")
   })
 }, ignoreNULL = FALSE)
 
@@ -734,7 +666,7 @@ AdonisPVal <- eventReactive(input$betaUpdate, {
   set.seed(11643764)
   adonisRes <- RunAdonis(physeqSubsetList[[SelectedPhyseq()]],
                          category = columnLUT[[SelectedPhyseq()]],
-                         distance = SelectedDistance())
+                         distance = "bray")
   pVal <- adonisRes$aov.tab$`Pr(>F)`[1]
 }, ignoreNULL = FALSE)
 
@@ -763,8 +695,7 @@ MakeOrdPlot <- eventReactive(input$betaUpdate, {
     scale_color_manual(values = colorOptions[[SelectedPhyseq()]]) +
     theme_bw() +
     geom_point(size = 3.5) +
-    ggtitle(paste(toupper(SelectedDistance()),
-                  "Distance of", 
+    ggtitle(paste("Bray Distance of", 
                   titleOptions[[SelectedPhyseq()]]),
             subtitle = paste("ADONIS p-val:", AdonisPVal())) +
     theme(plot.title = element_text(hjust = 0.5, size = 16),
@@ -791,10 +722,10 @@ renderPlot({
 <br>
 <br>
 
-According to ADONIS, the pre_post variable is significant to the clustering of
-control samples when using both UniFrac and weighted UniFrac. It is also 
-significant to the grouping of neutropenic samples when using the UniFrac
-metric only.
+According to ADONIS, post time point neutropenic and control sample communities 
+are significantly dissimilar. Additionally, pre vs post control samples 
+communities are significantly dissimilar.
+
 
 <br>
 <br>
@@ -914,7 +845,7 @@ renderPlotly({
                                                  denominatorLUT[[isolate(BiomarkerComparison())]],
                                                  "(-L2FC) vs",
                                                  numeratorLUT[[isolate(BiomarkerComparison())]],
-                                                 "(+ L2FC)\n RDP Data"))
+                                                 "(+ L2FC)\n WGS Data"))
   
   ggplotly(volcano, tooltip = c("Phylum", "Family", "Genus", "Species",
                                 "log2FoldChange", "baseMean"),

@@ -1,0 +1,55 @@
+---
+title: "TINMAN WGS Format Metadata"
+author: "Rachel Rodgers"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r load-libraries, message=FALSE}
+library("readxl")
+library("janitor")
+library("tidyverse")
+```
+
+## Format Metadata
+
+The most current WGS metadata is found in the Excel file METADATAFINAL_WGS.xlsx
+
+```{r format-combined-metadata, echo=FALSE}
+rawMap <- read_xlsx("../documents/original_documents/WGS/METADATAFINAL_WGS.xlsx") # 78 x 26
+
+#----- Format Column Names -----#
+mapNewCols <- rawMap %>% 
+  janitor::clean_names() %>% 
+  rename(sample_name = aample_name)
+
+#----- Change Factor Levels for Important Variables -----#
+
+# important variables are:
+#   "neutropenic"
+#   "pre_post"
+table(mapNewCols$neutropenic) # 58 Control, 20 Neutropenic
+table(mapNewCols$pre_post) # 39 post, 39 pre
+
+mapFactors <- mapNewCols %>% 
+  mutate(across(c(neutropenic, pre_post), as.factor))
+
+mapFactors$pre_post <- factor(mapFactors$pre_post, levels = c("PRE", "POST"))
+
+mapFactors %>% 
+  tabyl(neutropenic, pre_post)
+
+# Add unique ID information to more easily merge this metadata with the data
+#   coming from the biom file (sample names are different)
+mapFinal <- mapFactors %>%
+  mutate(unique_id = str_extract(string = sample_name,
+                                 pattern = "[:digit:]+"),
+         timepoint_id = str_extract(string = sample_name,
+                                    pattern = "[A-F]{1}.?[:digit:]{1}$")) %>% 
+  select(sample_name, unique_id, timepoint_id, pre_post, neutropenic, everything())
+```
+
+```{r save-mapFinal}
+saveRDS(mapFinal, "../data/RDataObjects/WGS/metadataFinal.RDS")
+```
+
