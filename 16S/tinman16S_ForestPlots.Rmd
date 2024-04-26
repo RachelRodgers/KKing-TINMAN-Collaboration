@@ -1,0 +1,374 @@
+---
+title: "TINMAN 16S Forest Plots"
+author: "Rachel Rodgers"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(fig.width=8,
+                      fig.height=6,
+                      warning = FALSE,
+                      message = FALSE)
+
+knitr::opts_knit$set(root.dir = "..")
+```
+
+```{r load-libraries, message=FALSE}
+library("here")
+library("phyloseq")
+library("gridExtra")
+library("ggrepel")
+library("ggpubr")
+library("scales")
+library("boot")
+library("patchwork")
+library("tidyverse")
+
+figPath <- "../analysis/figures/16S/"
+```
+
+```{r read-in-data}
+allTaxaDF <- readRDS(here("../data/RDataObjects/16S/allTaxaDF.RDS"))
+physeqBacteria <- readRDS(here("../data/RDataObjects/16S/physeqObjects/physeqBacteria.RDS"))
+```
+
+## Forest Plots Using Bootstrapping
+
+Generate forest plots for Clostridium innocuum and Blautia faecis.
+
+For this data, I will be using bootstrapping to calculate the mean and 95% CI
+of the abundance change of these bugs between pre and post, because this method
+does not rely on assumptions about the underlying distribution of the data.
+
+```{r taxa-abundance-data}
+
+#----- Get the Abundance Values for the Taxa of Interest -----#
+
+# Abundance of all taxa in data set:
+allAbdDF <- psmelt(physeqBacteria)
+
+# Clostridium innocuum:
+
+clostridiumASV <- allTaxaDF %>% 
+  filter(Genus == "[Clostridium] innocuum group") %>% 
+  pull("ASV")
+
+clostridiumAbdDF <- filter(allAbdDF, OTU == clostridiumASV)
+
+# Blautia faecis:
+
+blautiaASV <- allTaxaDF %>% 
+  filter(Genus == "Blautia" & Species == "faecis") %>% 
+  pull("ASV")
+
+blautiaAbdDF <- filter(allAbdDF, OTU == blautiaASV)
+```
+
+```{r bootstrap-functions}
+meanDelta <- function(data, indices) {
+  return(mean(data[indices]))
+}
+
+MakeForestDF <- function(df) {
+  
+  # Calculate the delta abundance (Pre-Post)
+  dfDelta <- df %>% 
+    select(unique_id, pre_post, neutropenic, Abundance) %>%
+    pivot_wider(names_from = pre_post, values_from = Abundance) %>%
+    mutate(delta_change = POST - PRE)
+  
+  # Separate dfDelta into neutropenic-only and control-only data frames
+  groups <- c("Neutropenic", "Control")
+  names(groups) <- groups
+  
+  dfList <- map(.x = groups, .f = ~ filter(dfDelta, neutropenic == .x))
+  
+  # Use bootstrapping to calculate mean delta abudnance
+  set.seed(14889841)
+  bootResList <- map(.x = dfList,
+                     .f = ~ boot::boot(data = .x$delta_change,
+                                       statistic = meanDelta,
+                                       R = 1000))
+  # Extract the average from the bootstrap results (held in list elem "t")
+  bootMeansList <- map(.x = bootResList, .f = ~ base::mean(.x$t))
+  
+  # Use bootstrapping to calculate the 95% confidence intervals
+  set.seed(14889841)
+  bootCIList <- map(.x = bootResList, 
+                    .f = ~ boot.ci(.x, type = "basic"))
+  
+  # Generate DFs with the boot-strap calculated mean, lower & upper CI
+  #   Add these dfs to finalDFList, which will be put together w/rbind
+  finalDFList <- vector(mode = "list", length = length(groups))
+  
+  for (i in 1:length(groups)) {
+
+    currentGroupName <- groups[[i]]
+    
+    modifiedGroupDF <- data.frame("category" = currentGroupName,
+                                  "n" = nrow(dfList[[currentGroupName]]),
+                                  "mean" = bootMeansList[[currentGroupName]],
+                                  "lower" = bootCIList[[currentGroupName]]$basic[1, 4],
+                                  "upper" = bootCIList[[currentGroupName]]$basic[1, 5])
+    
+    finalDFList[[i]] <- modifiedGroupDF
+    names(finalDFList)[i] <- currentGroupName
+    
+  }
+  
+  # Combine the data frames in finalDFList, add a estimate label column
+  forestPlotDF <- dplyr::bind_rows(finalDFList) %>%
+    mutate(across(c(mean, lower, upper), round),
+           estimate_lab = paste0(mean, " (", lower, "-", upper, ")"))
+}
+
+```
+
+```{r forest-plot-dfs}
+
+#----- Generate Basic Forest Plot Data Frames -----#
+
+clostridiumForestPlotDF <- MakeForestDF(df = clostridiumAbdDF)
+
+blautiaForestPlotDF <- MakeForestDF(df = blautiaAbdDF)
+
+dfList <- list("clostridium" = clostridiumForestPlotDF,
+               "blautia" = blautiaForestPlotDF)
+
+```
+
+```{r forest-plot-right-panels}
+
+clostridiumRight <- ggplot(clostridiumForestPlotDF, 
+                           aes(y = category)) +
+  theme_classic() +
+  geom_point(aes(x = mean, size = n), shape = 15) +
+  scale_size_continuous(range = c(3, 6)) +
+  geom_errorbar(aes(xmin = lower, xmax = upper), width = 0.125) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  #ggtitle("Change in Clostridium innocuum Abundance (Post - Pre)") +
+  theme(legend.position = "none",
+        axis.text = element_text(size = 12),
+        axis.title = element_text(size = 14),
+        plot.title = element_text(hjust = 0.5, size = 14),
+        axis.line.y = element_blank(),
+        axis.ticks.y= element_blank(),
+        axis.text.y= element_blank(),
+        axis.title.y= element_blank()) +
+  coord_cartesian(ylim = c(1, 3)) +
+  annotate("text", x = -500, y = 3, label = "Depleted", size = 4) +
+  annotate("text", x = 500, y = 3, label = "Enriched", size = 4)
+
+clostridiumRight
+
+blautiaRight <- ggplot(blautiaForestPlotDF,
+                       aes(y = category)) +
+  theme_classic() +
+  geom_point(aes(x = mean, size = n), shape = 15) +
+  scale_size_continuous(range = c(3, 6)) +
+  geom_errorbar(aes(xmin = lower, xmax = upper), width = 0.125) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  #ggtitle("Change in Blautia faecis Abundance (Post - Pre)") +
+  theme(legend.position = "none",
+        axis.text = element_text(size = 12),
+        axis.title = element_text(size = 14),
+        plot.title = element_text(hjust = 0.5, size = 14),
+        axis.line.y = element_blank(),
+        axis.ticks.y= element_blank(),
+        axis.text.y= element_blank(),
+        axis.title.y= element_blank()) +
+  coord_cartesian(ylim = c(1, 3), xlim = c(-450, 450)) +
+  annotate("text", x = -250, y = 3, label = "Depleted", size = 4) +
+  annotate("text", x = 250, y = 3, label = "Enriched", size = 4)
+
+blautiaRight
+
+rightPanelList <- list("clostridium" = clostridiumRight,
+                       "blautia" = blautiaRight)
+```
+
+```{r save-right-panels, eval=FALSE, include=FALSE}
+rightPanelPaths <- paste0(figPath, "forest_plots/", names(rightPanelList), 
+                          "_forestPlotRightPanel.pdf")
+
+walk2(.x = rightPanelList,
+      .y = rightPanelPaths,
+      .f = ~ ggsave(filename = here(.y), plot = .x, width = 11, height = 8.5,
+                    units = "in"))
+```
+
+```{r forest-plot-left-panels}
+
+forestLeft <- function(df) {
+  
+  # Add a row of data to the data frame that is just column names shown on plot
+  dfModified <- data.frame(category = "Category", n = "", mean = "",
+                           lower = "", upper = "",
+                           estimate_lab = "Avg. Change (95% CI)")
+  
+  dfModified <- rbind(df, dfModified)
+  dfModified$category <- factor(dfModified$category,
+                                levels = c("Control", "Neutropenic", "Category"))
+  
+  leftPlot <- ggplot(dfModified, aes(y = category)) +
+    #ggtitle(plotTitle) +
+    geom_text(aes(x = 0, label = category), hjust = 0, fontface = "bold") +
+    geom_text(aes(x = 1, label = estimate_lab),  hjust = 0,
+              fontface = ifelse(dfModified$estimate_lab == "Avg. Change (95% CI)",
+                                yes = "bold", no = "plain")) +
+    theme_void() +
+    coord_cartesian(xlim = c(0, 3), ylim = c(0, 3.5))
+  
+}
+
+#leftPanelList <- map2(.x = dfList, .y = names(dfList), .f = forestLeft)
+leftPanelList <- map(.x = dfList, .f = forestLeft)
+
+leftPanelList
+```
+
+```{r save-left-panels, eval=FALSE, include=FALSE}
+leftPanelPaths <- paste0(figPath, "forest_plots/", names(leftPanelList),
+                         "_forestPlotLeftPanel.pdf")
+
+walk2(.x = leftPanelList,
+      .y = leftPanelPaths,
+      .f = ~ ggsave(filename = here(.y), plot = .x, width = 11, height = 8.5,
+                    units = "in"))
+```
+
+```{r save-stitched-plots, eval=FALSE, include=FALSE, fig.width=11, fig.height=8.5}
+clostridiumPlotFull <- annotate_figure(ggarrange(leftPanelList$clostridium,
+                                                 rightPanelList$clostridium,
+                                                 nrow = 1, ncol = 2),
+                                       top = text_grob("Change in Clostridium innocuum Abundance (Post - Pre)"))
+clostridiumPlotFull
+
+ggsave(here(paste0(figPath, "forest_plots/clostridium_forestPlotFull.pdf")),
+       clostridiumPlotFull, width = 11, height = 8.5, units = "in")
+
+blautiaPlotFull <- annotate_figure(ggarrange(leftPanelList$blautia,
+                                             rightPanelList$blautia,
+                                             nrow = 1, ncol = 2),
+                                   top = text_grob("Change in Blautia faecis Abundance (Post - Pre)"))
+blautiaPlotFull
+
+ggsave(here(paste0(figPath, "forest_plots/blautia_forestPlotFull.pdf")),
+       blautiaPlotFull, width = 11, height = 8.5, units = "in")
+```
+
+
+```{r TESTCODE-forest-plot-clostridium-innocuum, eval=FALSE}
+
+
+#----- Calculate the Change in Taxon Abundance Between Pre and Post -----#
+
+clostridiumDelta <- clostridiumAbdDF %>% 
+  select(unique_id, pre_post, neutropenic, Abundance) %>% 
+  pivot_wider(names_from = pre_post, values_from = Abundance) %>% 
+  mutate(delta_change = PRE - POST)
+  #mutate(fold_change = POST/PRE, LFC = log(fold_change))
+
+#----- Use Bootstrapping to Calculate the Avg Delta and 95% CI per Group -----#
+
+# neutropenic samples:
+clostridiumNeutropenic <- clostridiumDelta %>% 
+  filter(neutropenic == "Neutropenic")
+
+set.seed(14889841)
+bootResultNeutropenic <- boot::boot(clostridiumNeutropenic$delta_change,
+                                    statistic, R = 1000)
+neutroClostridiumMeanDelta <- base::mean(bootResultNeutropenic$t)
+set.seed(14889841)
+neutroClostridiumCI <- boot.ci(bootResultNeutropenic, type = "basic")
+# printing neutroClostridiumCI returns the bounds for the "basic" 95% CI
+# here lower and upper are -166.8 and 1063.3
+# compare to t-test -242 and 1400
+clostridiumNeutroFinal <- data.frame("category" = "Neutropenic",
+                                     "n" = nrow(clostridiumNeutropenic),
+                                     "mean" = neutroClostridiumMeanDelta,
+                                     "lower" = neutroClostridiumCI$basic[1, 4],
+                                     "upper" = neutroClostridiumCI$basic[1, 5])
+
+# control samples:
+clostridiumControl <- clostridiumDelta %>% 
+  filter(neutropenic == "Control")
+
+set.seed(14889841)
+bootResultControl <- boot::boot(clostridiumControl$delta_change,
+                                statistic, R = 1000)
+controlClostridiumMeanDelta <- base::mean(bootResultControl$t)
+# here mean is -413.7854, compared to t-test -404
+set.seed(14889841)
+controlClostridiumCI <- boot.ci(bootResultControl, type = "basic")
+# here lower and upper are -924.6 and 177.2 compared to -951 and 141
+clostridiumControlFinal <- data.frame("category" = "Control",
+                                      "n" = nrow(clostridiumControl),
+                                      "mean" = controlClostridiumMeanDelta,
+                                      "lower" = -924.6,
+                                      "upper" = 177.2)
+
+#----- Combine Data for Middle Portion of the Plot -----#
+
+clostridiumForestData <- rbind(clostridiumNeutroFinal, clostridiumControlFinal) %>% 
+  mutate(across(c(mean, lower, upper), round),
+         estimate_lab = paste0(mean, " (", lower, "-", upper, ")"))
+
+clostridiumPlotMiddle <- ggplot(clostridiumForestData,
+                                aes(y = category)) +
+  theme_classic() +
+  geom_point(aes(x = mean, size = n), shape = 15) +
+  scale_size_continuous(range = c(3, 6)) +
+  #geom_linerange(aes(xmin = lower, xmax = upper))+
+  geom_errorbar(aes(xmin = lower, xmax = upper), width = 0.125) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  coord_cartesian(ylim = c(1, 2)) +
+  annotate("text", x = -500, y = 2.5, label = "Control", size = 4) +
+  annotate("text", x = 750, y = 2.5, label = "Neutropenic", size = 4) +
+  #ggtitle("Average Change in Abundance of Clostridium innoccum") +
+  #labs(x = "Change in Abundance (Pre - Post) and 95% CI", y = "Group") +
+  theme(legend.position = "none",
+        axis.text = element_text(size = 12),
+        axis.title = element_text(size = 14),
+        plot.title = element_text(hjust = 0.5, size = 14),
+        axis.line.y = element_blank(),
+        axis.ticks.y= element_blank(),
+        axis.text.y= element_blank(),
+        axis.title.y= element_blank())
+clostridiumPlotMiddle
+
+#----- Plot Left Side of Plot -----#
+
+# Add a row of data to the data frame that is just column names shown on plot
+clostridiumForestTitles <- data.frame(category = "Category", n = "", mean = "",
+                                      lower = "", upper = "", 
+                                      estimate_lab = "Avg. Change (95% CI)")
+clostridiumForestDataLeft <- rbind(clostridiumForestData, 
+                                   clostridiumForestTitles)
+clostridiumForestDataLeft$category <- factor(clostridiumForestDataLeft$category,
+                                             levels = c("Control",
+                                                        "Neutropenic",
+                                                        "Category"))
+
+clostridiumPlotLeft <- ggplot(clostridiumForestDataLeft,
+                              aes(y = category)) +
+  geom_text(aes(x = 0, label = category), hjust = 0, fontface = "bold") +
+  geom_text(aes(x = 1, label = estimate_lab),  hjust = 0,
+            fontface = ifelse(clostridiumForestDataLeft$estimate_lab == "Avg. Change (95% CI)",
+                              yes = "bold", no = "plain")) +
+  theme_void() +
+  coord_cartesian(xlim = c(0, 3), ylim = c(0, 3))
+clostridiumPlotLeft
+
+#----- Merge the Left and Middle Panels for the Clostridium Plot -----#
+
+clostridiumForestFinal <- c(
+  area(t = 0, l = 0, b = 30, r = 3),
+  area(t = 1, l = 4, b = 30, r = 9)
+)
+
+clostridiumPlotLeft + clostridiumPlotMiddle + plot_layout(design = clostridiumForestFinal)
+```

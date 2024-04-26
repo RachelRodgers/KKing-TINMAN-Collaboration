@@ -37,6 +37,7 @@ library("DESeq2")
 library("tidyverse")
 
 figPath <- "../analysis/figures/16S/"
+resultsPath <- "../analysis/results/16S"
 
 source(here("shared_R_scripts/Helper_Functions.R"))
 source(here("shared_R_scripts/BoxPlotHelpers.R"))
@@ -135,6 +136,10 @@ sampleDataFinal <- sampleDataUniqueID
 row.names(sampleDataFinal) <- sampleDataFinal$sample_name
 ```
 
+```{r save-sampleDataFinal-for-ENA-use, eval=FALSE, include=FALSE}
+saveRDS(sampleDataFinal, here("../data/RDataObjects/16S/sampleDataFinal.RDS"))
+```
+
 ```{r physeqMerged, results='hide'}
 physeqMerged <- merge_phyloseq(physeqRaw, sample_data(sampleDataFinal))
 physeqMerged # 1823 taxa x 76 samples
@@ -192,7 +197,7 @@ readsPerSampleDF <- sampleDataFinal %>%
   select(sample_name, neutropenic, pre_post, readsPerSample) %>% 
   arrange(readsPerSample)
 
-# apply levels to samples so bar graph will show increasing reads/sample
+# apply  to samples so bar graph will show increasing reads/sample
 sampleLevels <- pull(readsPerSampleDF, sample_name)
 readsPerSampleDF$sample_name <- factor(readsPerSampleDF$sample_name,
                                        levels = sampleLevels)
@@ -309,6 +314,12 @@ sampleDataBacteria <- as(sample_data(physeqBacteria), "data.frame")
 
 After dropping non-bacterial taxa, the total number of taxa are reduced from 
 1,823 to 1,809.
+
+```{r save-physeqBacteria, eval=FALSE, include=FALSE}
+saveRDS(physeqBacteria, 
+        here("../data/RDataObjects/16S/physeqObjects/physeqBacteria.RDS"))
+```
+
 
 Now checking the prevalence and abundance of different bacterial families present.
 It may be useful to identify and remove low prevalence/low abundance taxa from
@@ -533,6 +544,72 @@ renderPlotly({
 <br>
 <br>
 
+```{r save-static-community-composition-plots, eval=FALSE, include=FALSE}
+rankList <- c("Phylum", "Class", "Order", "Family", "Genus", "Species")
+names(rankList) <- rankList
+
+# Get sample order (place 102 b/w 50 and 53)
+sampleLevels <- names(communityCompXLabs)[order(names(communityCompXLabs))]
+moveSamples <- sampleLevels[grepl("102", sampleLevels)]
+sampleLevelsShort <- sampleLevels[sampleLevels != moveSamples]
+sampleLevelsFinal <- c(sampleLevelsShort[1:38],
+                       moveSamples,
+                       sampleLevelsShort[39:74])
+
+# Make abundance DF for plotting at each tax rank
+abdDFList <- map(.x = rankList,
+                 .f = MakeAbundanceDF,
+                 physeq = physeqBacteria,
+                 abundanceFilter = 0,
+                 pruneMissing = FALSE)
+
+# For species abundance DF, make Genus Species column to account for the many
+#   NAs in the species column
+abdDFList$Species <- mutate(abdDFList$Species, 
+                            "Species" = paste(Genus, Species, sep = " "))
+
+communityPlotList <- map2(.x = abdDFList,
+                          .y = rankList,
+                          .f = ~ PlotCommunityCompositionModified(abdDF = .x,
+                                                                  taxRank = .y,
+                                                                  facetFormula = "pre_post ~ neutropenic",
+                                                                  facetCol = 2,
+                                                                  facetRow = 2))
+
+communityPlotList
+
+# Apply sampleLevelsFinal to the Phylum and Class level community plots
+abdDFPhylum <- abdDFList$Phylum
+abdDFPhylum$Sample <- factor(abdDFPhylum$Sample, levels = sampleLevelsFinal)
+communityPhylumLevel <- PlotCommunityCompositionModified(abdDF = abdDFPhylum,
+                                                         taxRank = "Phylum",
+                                                         facetFormula = "pre_post ~ neutropenic",
+                                                         facetCol = 2,
+                                                         facetRow = 2)
+abdDFClass <- abdDFList$Class
+abdDFClass$Sample <- factor(abdDFClass$Sample, levels = sampleLevelsFinal)
+communityClassLevel <- PlotCommunityCompositionModified(abdDF = abdDFClass,
+                                                        taxRank = "Class",
+                                                        facetFormula = "pre_post ~ neutropenic",
+                                                        facetCol = 2,
+                                                        facetRow = 2)
+
+# Save Phylum and Class for now because the legends get huge otherwise
+communityPlotsPath <- paste0(figPath, "community_composition")
+
+if (!file.exists(communityPlotsPath)) {
+  dir.create(communityPlotsPath)
+}
+
+communityPlotNames <- paste0(communityPlotsPath, "/", c("Phylum", "Class"),
+                             "-community-composition.pdf")
+walk2(.x = list(communityPhylumLevel, communityClassLevel),
+      .y = here(communityPlotNames),
+      .f = ~ ggsave(filename = .y, plot = .x, width = 11, height = 8.5,
+                    units = "in"))
+```
+
+
 ### **Alpha Diversity**
 
 <br>
@@ -562,6 +639,21 @@ sampleDataBacteria <- base::merge(alphaDiv, sampleDataBacteria, by = "row.names"
 
 <br>
 <br>
+
+```{r richness-stats, eval=FALSE, include=FALSE}
+write.table(sampleDataBacteria,
+            file = here("../analysis/results/16S/16S_metadataWithAlphaDiv.txt"),
+            quote = FALSE, sep = "\t", row.names = FALSE)
+
+richnessStats <- sampleDataBacteria %>% 
+  group_by(timepoint_condition) %>% 
+  summarize("avg_richness" = mean(observed),
+            "med_richness" = median(observed))
+
+write.table(richnessStats, 
+            file = here("../analysis/results/16S/richnessStats.txt"),
+            quote = FALSE, sep = "\t", row.names = FALSE)
+```
 
 ```{r PlotAlphaModified}
 # Modified PrettyBox() function to add option for connecting samples by unique_id
@@ -607,32 +699,77 @@ PlotAlphaModified <- function(df, xVar, yVar, statMethod, plotTitle, yLims,
   return(basePlot)
   
 }
+
+PlotAlphaViolin <- function(df, xVar, yVar, statMethod, plotTitle, yLims,
+                            addLines = FALSE,
+                            colorVals = NULL, label_x = NULL, label_y = NULL,
+                            legendPos = "none", facet_formula = NULL,
+                            facet_rows = NULL, facet_cols = NULL) {
+  basePlot <- ggplot(data = df,
+                     aes_string(x = xVar, y = yVar, fill = xVar)) +
+    geom_violin() +
+    geom_boxplot(width = 0.1, color = "black", outlier.shape = NA) +
+    #geom_jitter(width = 0.05, color = "black") +
+    scale_fill_manual(values = colorVals) +
+    labs(x = label_x, y = label_y, title = plotTitle) +
+    scale_y_continuous(limits = yLims) +
+    theme_pubr() +
+    theme(axis.title = element_text(size = 14),
+          axis.text = element_text(size = 12),
+          plot.title = element_text(size = 14, hjust = 0.5),
+          strip.text = element_text(size = 12),
+          legend.title = element_blank(), 
+          legend.position = legendPos,
+          legend.text = element_text(size = 12)) +
+    stat_compare_means(method = statMethod, label.x.npc = 0)
+  
+  if (addLines) {
+    basePlot <- basePlot +
+      geom_point() +
+      geom_line(aes(group = unique_id))
+  } else {
+    basePlot <- basePlot +
+      geom_jitter(width = 0.05, color = "black")
+  }
+  
+  if (!is.null(facet_formula)) {
+    basePlot <- basePlot +
+      facet_wrap(as.formula(facet_formula), nrow = facet_rows, ncol = facet_cols,
+                 scales = "free")
+  }
+  
+  return(basePlot)
+  
+}
+
+alphaPlotsPath <- paste0(figPath, "alpha_diversity")
 ```
 
 ```{r alphaCombinedTP, fig.width=9, fig.height=4}
 #----- Combined Time Points -----#
 
 alphaCombinedTP <- pmap(.l = list(yVar = alphaIdx,
-                                  plotTitle = names(alphaIdx)),
-                        .f = PrettyBox,
+                                  plotTitle = names(alphaIdx),
+                                  yLims = list("Richness" = c(0, 280),
+                                               "Peilou's Evenness" = c(0, 1),
+                                               "Shannon Diversity" = c(0, 4.5))),
+                        .f = PlotAlphaModified,
                         df = sampleDataBacteria,
                         xVar = "neutropenic",
                         statMethod = "wilcox.test",
                         colorVals = groupColors)
 
 alphaCombinedTPArr <- annotate_figure(ggarrange(plotlist = alphaCombinedTP,
-                                                nrow = 1, ncol = 3),
+                                                nrow = 2, ncol = 2),
                                       top = text_grob("Alpha Diversity (Time Points Combined)",
                                                       size = 14, face = "bold"))
 alphaCombinedTPArr
 ```
 
-```{r save-alphaCombinedTPArr, include=FALSE, eval=FALSE}
-ggsave(paste0(figPath, "alphaCombinedTimepoints.pdf"),
-       plot = alphaCombinedTPArr,
-       width = 11, height = 8.5, units = "in")
+```{r save-alphaCombinedTPArr, eval=FALSE}
+ggsave(paste0(alphaPlotsPath, "/alpha-combined-timepoints.pdf"),
+       alphaCombinedTPArr, width = 11, height = 8.5, units = "in")
 ```
-
 
 <br>
 <br>
@@ -667,9 +804,8 @@ alphaSeparateTPArr
 ```
 
 ```{r save-alphaSeparateTPArr, include=FALSE, eval=FALSE}
-ggsave(paste0(figPath, "alphaSeparateTimepoints.pdf"),
-       plot = alphaSeparateTPArr,
-       width = 11, height = 8.5, units = "in")
+ggsave(paste0(alphaPlotsPath, "/alpha-separate-timepoints.pdf"),
+       alphaSeparateTPArr, width = 11, height = 8.5, units = "in")
 ```
 
 <br>
@@ -703,9 +839,8 @@ alphaPrePostArr
 ```
 
 ```{r save-alphaPrePostArr, include=FALSE, eval=FALSE}
-ggsave(paste0(figPath, "alphaPrePost.pdf"),
-       plot = alphaPrePostArr,
-       width = 11, height = 8.5, units = "in")
+ggsave(paste0(alphaPlotsPath, "/alpha-pre-post.pdf"),
+       alphaPrePostArr, width = 11, height = 8.5, units = "in")
 ```
 
 <br>
@@ -946,6 +1081,140 @@ metric only.
 <br>
 <br>
 
+```{r save-static-ordination-plots, eval=FALSE, include=FALSE}
+
+# Make static ordination plots for all ps objects in physeqSubsetList
+
+#----- Calculate Ordinations -----#
+
+set.seed(11643764)
+unweightedOrdList <- map(.x = physeqSubsetList,
+                         .f = ~ ordinate(.x, method = "PCoA", "unifrac"))
+
+set.seed(11643764)
+weightedOrdList <- map(.x = physeqSubsetList,
+                       .f = ~ ordinate(.x, method = "PCoA", "wunifrac"))
+
+
+#----- Run ADONIS for Significance -----#
+
+variableColNames <- list("all_samples_by_cnd" = "neutropenic",
+                         "all_samples_by_tp_cnd" = "timepoint_condition",
+                         "pre_timepoint" = "neutropenic",
+                         "post_timepoint" = "neutropenic",
+                         "control_samples" = "pre_post",
+                         "neutropenic_samples" = "pre_post")
+
+set.seed(11643764)
+unweightedAdonisResList <- map2(.x = physeqSubsetList,
+                                .y = variableColNames,
+                                .f = ~ RunAdonis(physeqObj = .x,
+                                                 category = .y,
+                                                 distance = "unifrac"))
+unweightedPVals <- map(.x = unweightedAdonisResList,
+                       .f = ~ .x$aov.tab$`Pr(>F)`[1])
+
+set.seed(11643764)
+weightedAdonisResList <- map2(.x = physeqSubsetList,
+                              .y = variableColNames,
+                              .f = ~ RunAdonis(physeqObj = .x,
+                                               category = .y,
+                                               distance = "wunifrac"))
+weightedPVals <- map(.x = weightedAdonisResList,
+                     .f = ~ .x$aov.tab$`Pr(>F)`[1])
+
+#----- Draw Ordination Plots (unweighted & weighted) with Confidence Ellipses -----#
+
+colorByVar <- c("all_samples_by_cnd" = "neutropenic",
+                "all_samples_by_tp_cnd" = "timepoint_condition",
+                "pre_timepoint" = "neutropenic",
+                "post_timepoint" = "neutropenic",
+                "control_samples" = "pre_post",
+                "neutropenic_samples" = "pre_post")
+
+colorValues <- list("all_samples_by_cnd" = groupColors,
+                 "all_samples_by_tp_cnd" = tpCndColors,
+                 "pre_timepoint" = groupColors,
+                 "post_timepoint" = groupColors,
+                 "control_samples" = timepointColors,
+                 "neutropenic_samples" = timepointColors)
+  
+titleOptions <- c("all_samples_by_cnd" = "All Samples",
+                  "all_samples_by_tp_cnd" = "All Samples",
+                  "pre_timepoint" = "Pre Time Point Samples",
+                  "post_timepoint" = "Post Time Point Samples",
+                  "control_samples" = "Control Samples",
+                  "neutropenic_samples" = "Neutropenic Samples")
+
+PlotOrdinationsModified <- function(physeqObj, ordinationObj, colorBy,
+                                    colorValues, distanceMetric,
+                                    titleString, adonisP) {
+  
+  ordPlot <- plot_ordination(physeq = physeqObj,
+                             ordination = ordinationObj,
+                             color = colorBy) +
+    scale_color_manual(values = colorValues) +
+    theme_bw() +
+    geom_point(size = 3.5) +
+    ggtitle(paste(toupper(distanceMetric),
+                  "Distance of", 
+                  titleString),
+            subtitle = paste("ADONIS p-val:", adonisP)) +
+    theme(plot.title = element_text(hjust = 0.5, size = 16),
+          plot.subtitle = element_text(hjust = 0.5, size = 14),
+          legend.title = element_text(size = 16),
+          legend.text = element_text(size = 14)) + 
+    stat_ellipse(type = "norm")
+}
+
+unweightedOrdPlots <- pmap(.l = list(physeqObj = physeqSubsetList,
+                                     ordinationObj = unweightedOrdList,
+                                     colorBy = colorByVar,
+                                     colorValues = colorValues,
+                                     titleString = titleOptions,
+                                     adonisP = unweightedPVals),
+                           .f = PlotOrdinationsModified,
+                           distanceMetric = "unifrac")
+
+weightedOrdPlots <- pmap(.l = list(physeqObj = physeqSubsetList,
+                                   ordinationObj = weightedOrdList,
+                                   colorBy = colorByVar,
+                                   colorValues = colorValues,
+                                   titleString = titleOptions,
+                                   adonisP = weightedPVals),
+                         .f = PlotOrdinationsModified,
+                         distanceMetric = "wunifrac")
+
+#----- Save Plots -----#
+
+betaPlotsPath <- paste0(figPath, "beta_diversity")
+
+if (!file.exists(betaPlotPaths)) {
+  dir.create(betaPlotsPath)
+}
+
+unweightedPlotFileNames <- paste0(betaPlotsPath, 
+                                  "/unweighted_UniFrac_ordination_of_",
+                                  names(unweightedOrdPlots),
+                                  ".pdf")
+
+walk2(.x = unweightedPlotFileNames,
+      .y = unweightedOrdPlots,
+      .f = ~ ggsave(filename = .x, plot = .y, width = 11, height = 8.5,
+                    units = "in"))
+
+weightedPlotFileNames <- paste0(betaPlotsPath,
+                                "/weighted_UniFrac_ordination_of_",
+                                names(weightedOrdPlots),
+                                ".pdf")
+
+walk2(.x = weightedPlotFileNames,
+      .y = weightedOrdPlots,
+      .f = ~ ggsave(filename = .x, plot = .y, width = 11, height = 8.5,
+                    units = "in"))
+
+```
+
 ### **Biomarker Analysis with DESeq2**
 
 <br>
@@ -962,6 +1231,7 @@ GenerateDESeqResultsModified <- function(physeq, variable, numerator, denominato
   
   # Returns DESeq Results as Formal Class "DESeqResults"
   # Create formula from string variable
+  #formula <- as.formula(paste("~ pre_post +", variable, sep = " "))
   formula <- as.formula(paste("~", variable, sep = " "))
   # Convert to deseq data set object
   ds <- phyloseq_to_deseq2(physeq, design = formula)
@@ -1061,7 +1331,7 @@ renderPlotly({
                                                  denominatorLUT[[isolate(BiomarkerComparison())]],
                                                  "(-L2FC) vs",
                                                  numeratorLUT[[isolate(BiomarkerComparison())]],
-                                                 "(+ L2FC)\n RDP Data"))
+                                                 "(+ L2FC)\n SILVA Data"))
   
   ggplotly(volcano, tooltip = c("Phylum", "Family", "Genus", "Species",
                                 "log2FoldChange", "baseMean"),
@@ -1073,6 +1343,158 @@ renderPlotly({
 <br>
 <br>
 <br>
+
+```{r save-static-biomarker-plots, eval=FALSE, include=FALSE}
+numeratorLUT <- c("all_samples_by_cnd" = "Control",
+                  "pre_timepoint" = "Control",
+                  "post_timepoint" = "Control",
+                  "control_samples" = "PRE",
+                  "neutropenic_samples" = "PRE")
+
+denominatorLUT <- c("all_samples_by_cnd" = "Neutropenic",
+                    "pre_timepoint" = "Neutropenic",
+                    "post_timepoint" = "Neutropenic",
+                    "control_samples" = "POST",
+                    "neutropenic_samples" = "POST")
+
+comparisons <- names(numeratorLUT)
+biomarkerPhyseqList <- physeqSubsetList[names(physeqSubsetList) %in% comparisons]
+
+biomarkerColumns <- c("all_samples_by_cnd" = "neutropenic",
+                      "pre_timepoint" = "neutropenic",
+                      "post_timepoint" = "neutropenic",
+                      "control_samples" = "pre_post",
+                      "neutropenic_samples" = "pre_post")
+
+formulaStrList <- c("all_samples_by_cnd" = "~ neutropenic",
+                    "pre_timepoint" = "~ neutropenic",
+                    "post_timepoint" = "~ neutropenic",
+                    "control_samples" = "~ pre_post",
+                    "neutropenic_samples" = "~ pre_post")
+
+GenerateDESeqResultsModified <- function(physeq, variable, formulaStr,
+                                         numerator, denominator) {
+  
+  # Returns DESeq Results as Formal Class "DESeqResults"
+  # Create formula from string variable
+  #formula <- as.formula(paste("~", variable, sep = " "))
+  formula <- as.formula(formulaStr)
+  # Convert to deseq data set object
+  ds <- phyloseq_to_deseq2(physeq, design = formula)
+  # work-around
+  counts <- counts(ds)
+  geoMeans <- apply(counts, 1,
+                      function(row) {if (all(row == 0)) 0 else exp(mean(log(row[row != 0])))})
+  dds <- estimateSizeFactors(ds, geoMeans = geoMeans)
+  # Run analysis
+  ddsAnalysis <- DESeq(dds, test = "Wald", fitType = "local", betaPrior = FALSE)
+  # Extract and format results
+  ddsResults <- results(ddsAnalysis,
+                        contrast = c(variable, numerator, denominator)) 
+}
+
+deseqResList <- pmap(.l = list(physeq = biomarkerPhyseqList,
+                               variable = biomarkerColumns,
+                               numerator = numeratorLUT,
+                               denominator = denominatorLUT,
+                               formulaStr = formulaStrList),
+                     .f = GenerateDESeqResultsModified)
+
+
+deseqResTableList <- map2(.x = biomarkerPhyseqList,
+                          .y = deseqResList,
+                          .f = ~ GenerateDESeqResultsTable(physeq = .x,
+                                                           sigThreshold = 0.05,
+                                                           ddsResults = .y))
+
+volcanoTitleStrings <- paste(names(biomarkerPhyseqList), "\n",
+                             "Differentially Abundant Taxa\n",
+                             denominatorLUT,
+                             "(-L2FC) vs",
+                             numeratorLUT,
+                             "(+L2FC)\n SILVA Data")
+names(volcanoTitleStrings) <- names(biomarkerPhyseqList)
+
+volcanoPlotList <- pmap(.l = list(physeq = biomarkerPhyseqList,
+                                  resultsDataTable = deseqResTableList,
+                                  plotTitle = volcanoTitleStrings),
+                        .f = PlotStaticVolcano,
+                        sigThreshold = 0.05)
+
+volcanoPlotList
+
+#----- Save Static Volcano Plots -----#
+
+volcanoPlotsPath <- paste0(figPath, "deseq_volcano_plots")
+
+if (!file.exists(volcanoPlotsPath)) {
+  dir.create(volcanoPlotsPath)
+}
+
+volcanoPlotNames <- paste0(volcanoPlotsPath, "/", names(biomarkerPhyseqList),
+                           "-deseq-volcano.pdf")
+walk2(.x = volcanoPlotList,
+      .y = volcanoPlotNames,
+      .f = ~ ggsave(filename = .y, plot = .x, width = 11, height = 8.5,
+                    units = "in"))
+```
+
+```{r save-deseq-sig-results-ALL-COMPARISONS, eval=FALSE, include=FALSE}
+
+#----- Filter Significant Results from deseqResTableList -----#
+
+sigDESeqResTableList <- map(.x = deseqResTableList,
+                            .f = ~ filter(.x, Significant == TRUE))
+
+deseqResPath <- paste0(resultsPath, "/deseq2/all_comparisons/")
+
+if (!file.exists(deseqResPath)) {
+  dir.create(deseqResPath)
+}
+
+sigResFileNames <- paste0(deseqResPath, names(sigDESeqResTableList), 
+                          "_DESeq2_SigRes.txt")
+
+walk2(.x = sigDESeqResTableList,
+      .y = sigResFileNames,
+      .f = ~ write.table(x = .x, file = .y, quote = FALSE, sep = "\t",
+                         row.names = FALSE))
+```
+
+```{r save-deseq-sig-results-OVERLAPS, eval=FALSE, include=FALSE}
+preBiomarkerTable <- deseqResTableList$pre_timepoint %>% 
+  filter(Significant == TRUE)
+preBiomarkers <- preBiomarkerTable$OTU
+
+postBiomarkerTable <- deseqResTableList$post_timepoint %>% 
+  filter(Significant == TRUE)
+postBiomarkers <- postBiomarkerTable$OTU
+
+biomarkersUniqueToPost <- postBiomarkers[!postBiomarkers %in% preBiomarkers]
+uniquePostBiomarkerTable <- postBiomarkerTable %>% 
+  filter(OTU %in% biomarkersUniqueToPost)
+
+biomarkersNotUniqueToPost <- postBiomarkers[postBiomarkers %in% preBiomarkers]
+nonUniquePostBiomarkerTable <- postBiomarkerTable %>% 
+  filter(OTU %in% biomarkersNotUniqueToPost)
+
+# save pre and post biomarker tables, and biomarkers unique to post
+deseqResPath <- paste0(resultsPath, "/", "deseq2")
+
+if (!file.exists(deseqResPath)) {
+  dir.create(deseqResPath)
+}
+
+deseqTableNames <- paste0(deseqResPath, "/overlaps/", c("post-biomarkers.txt",
+                                                        "pre-biomarkers.txt",
+                                                        "biomarkers-unique-to-post.txt"))
+
+walk2(.x = list(postBiomarkerTable, preBiomarkerTable, uniquePostBiomarkerTable),
+      .y = deseqTableNames,
+      .f = ~ write.table(x = .x, file = .y, quote = FALSE, sep = "\t",
+                         row.names = FALSE))
+```
+
 
 ### Session Info
 
