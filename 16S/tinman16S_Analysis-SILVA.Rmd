@@ -49,10 +49,9 @@ options(shiny.sanitize.errors = FALSE)
 ## Overview {.tabset}
 
 In this analysis, we are interested in investigating changes in the gut 
-bacterial microbiome in patients who developed neutropenia after antibiotics
-(10 patients), and comparing to matched controls (29 patients). Each patient has
-a "pre" and "post" time point. This data set will be analyzed in several
-different groupings:
+bacterial microbiome in patients who developed neutropenia after antibiotics, 
+and comparing to matched controls. Each patient has a "pre" and "post" time 
+point. This data set will be analyzed in several different groupings:
 
   1. Neutropenic vs Controls in the full cohort (time points combined)
   2. Neutropenic vs Controls in the "pre" and "post" time points only
@@ -140,8 +139,18 @@ row.names(sampleDataFinal) <- sampleDataFinal$sample_name
 saveRDS(sampleDataFinal, here("../data/RDataObjects/16S/sampleDataFinal.RDS"))
 ```
 
+```{r remove-retrospective-neutropenic-samples}
+# As per request on May 28, 2024, remove the neutropenic samples originating
+#   from the retrospective arm
+removeSamples <- c("053A2", "053D2", "061A2", 
+                   "061D2", "069C2", "069D2", 
+                   "070B2", "070D2")
+sampleDataFiltered <- sampleDataFinal %>% 
+  filter(!sample_name %in% removeSamples)
+```
+
 ```{r physeqMerged, results='hide'}
-physeqMerged <- merge_phyloseq(physeqRaw, sample_data(sampleDataFinal))
+physeqMerged <- merge_phyloseq(physeqRaw, sample_data(sampleDataFiltered))
 physeqMerged # 1823 taxa x 76 samples
 ```
 
@@ -153,7 +162,7 @@ names(groupColors) <- c("Control", "Neutropenic")
 timepointColors <- c("PRE" = "blue", "POST" = "red")
 
 tpCndColors <- cbPaletteGrey[5:8]
-names(tpCndColors) <- unique(sampleDataFinal$timepoint_condition)
+names(tpCndColors) <- unique(sampleDataFiltered$timepoint_condition)
 
 # Save columnNames to a reactiveValue as well so it can be accessed when 
 #   running ADONIS calculations for beta diversity, and DESeq2 analysis
@@ -173,7 +182,7 @@ columnLUT <- reactiveValues("all_samples_by_cnd" = "neutropenic",
 Let's get an overview of the sample distribution by group and time point:
 
 ```{r sampleOverview}
-sampleOverview <- sampleDataFinal %>% 
+sampleOverview <- sampleDataFiltered %>% 
   tabyl(neutropenic, pre_post)
 
 # options list dom = 't' means only the table shows (not the search or length menu)
@@ -193,7 +202,7 @@ significant differences could affect the outcome of the ecological measures.
 
 ```{r frequency-of-read-counts}
 # make df of reads/sample
-readsPerSampleDF <- sampleDataFinal %>% 
+readsPerSampleDF <- sampleDataFiltered %>% 
   select(sample_name, neutropenic, pre_post, readsPerSample) %>% 
   arrange(readsPerSample)
 
@@ -207,7 +216,7 @@ readsPerSampleDF$sample_name <- factor(readsPerSampleDF$sample_name,
 summary(readsPerSampleDF$readsPerSample)
 ```
 
-Reads/sample range from 1,521 to 45,885 with an average of 28,826.
+Reads/sample range from 1,521 to 45,885 with an average of 28,874.
 
 ```{r readDistPlot}
 readDistPlot <- ggplot(readsPerSampleDF,
@@ -225,7 +234,7 @@ readDistPlot <- ggplot(readsPerSampleDF,
 readDistPlot
 ```
 ```{r readDistBox}
-readDistBox <- PrettyBox(df = sampleDataFinal,
+readDistBox <- PrettyBox(df = sampleDataFiltered,
                          xVar = "neutropenic", yVar = "readsPerSample",
                          statMethod = "wilcox.test",
                          plotTitle = "Avg. Reads Across Groups (Time Points Combined)",
@@ -241,7 +250,7 @@ There is no significant difference in average reads per sample between the
 control and neutropenic sample groups when combined across pre/post time points.
 
 ```{r readDistBoxByTime}
-readDistBoxByTime <- PrettyBox(df = sampleDataFinal,
+readDistBoxByTime <- PrettyBox(df = sampleDataFiltered,
                                xVar = "neutropenic", yVar = "readsPerSample",
                                statMethod = "wilcox.test",
                                plotTitle = "Avg. Reads Across Groups Within Time Point",
@@ -262,7 +271,7 @@ time points.
 <br>
 
 ```{r readDistBoxByGroup}
-readDistBoxByGroup <- PrettyBox(df = sampleDataFinal,
+readDistBoxByGroup <- PrettyBox(df = sampleDataFiltered,
                                xVar = "pre_post", yVar = "readsPerSample",
                                statMethod = "wilcox.test",
                                plotTitle = "Avg. Reads Across Time Points Within Groups",
@@ -307,7 +316,7 @@ physeqBacteria <- subset_taxa(physeqMerged,
                                 Phylum != "Chloroplast")
 # any samples depleted?
 any(sample_sums(physeqBacteria) == 0) # FALSE
-physeqBacteria # 1809 x 76
+physeqBacteria # 1809 x 68F
 
 sampleDataBacteria <- as(sample_data(physeqBacteria), "data.frame")
 ```
@@ -437,7 +446,7 @@ fluidRow(
 
 #----- React -----#
 
-communityCompXLabs <- sampleDataFinal %>% 
+communityCompXLabs <- sampleDataFiltered %>% 
   select(sample_name, unique_id) %>%
   mutate(unique_id = str_remove(string = unique_id, "^0+")) %>% 
   deframe()
@@ -745,7 +754,7 @@ PlotAlphaViolin <- function(df, xVar, yVar, statMethod, plotTitle, yLims,
 alphaPlotsPath <- paste0(figPath, "alpha_diversity")
 ```
 
-```{r alphaCombinedTP, fig.width=9, fig.height=4}
+```{r alphaCombinedTP, fig.width=9, fig.height=6}
 #----- Combined Time Points -----#
 
 alphaCombinedTP <- pmap(.l = list(yVar = alphaIdx,
@@ -1074,9 +1083,7 @@ renderPlot({
 <br>
 
 According to ADONIS, the pre_post variable is significant to the clustering of
-control samples when using both UniFrac and weighted UniFrac. It is also 
-significant to the grouping of neutropenic samples when using the UniFrac
-metric only.
+control samples when using both UniFrac and weighted UniFrac.
 
 <br>
 <br>
