@@ -2,9 +2,15 @@
 
 Repository of scripts associated with the study "Antibiotic-associated neutropenia is marked by decreased predominance of intestinal <em>Lachnospiraceae</em> in pediatric patients."
 
-The raw data files for this study are available through the [European Nucleotide Archive Accession Number PRJEB72348] (https://www.ebi.ac.uk/ena/browser/text-search?query=PRJEB72348).
+The raw data files for this study are available through the European Nucleotide Archive Accession Number PRJEB72348.
 
 Associated data files needed to run the scripts are available in the documents subdirectory.
+
+To clone this repository with its associated submodule:
+
+```
+git clone --recurse-submodules git@github.com:RachelRodgers/KKing-TINMAN-Collaboration.git
+```
 
 ## Bacterial 16S Analyses
 All code associated with the analyses of the 16S data can be found in the 16S subdirectory. Processing and analyses is segmented into several scripts and should be run in the following order:

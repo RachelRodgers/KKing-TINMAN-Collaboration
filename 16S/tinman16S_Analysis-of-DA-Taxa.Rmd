@@ -81,7 +81,6 @@ allTaxaVec <- pull(allTaxaDF, ASV)
 saveRDS(allTaxaDF, file = here("../data/RDataObjects/16S/allTaxaDF.RDS"))
 ```
 
-
 ## DESeq Ground Truth Plots
 
 Ground truth plots are used to visualize the abundance of taxa of interest in
@@ -206,7 +205,6 @@ ggsave(filename = here(paste0(gtPlotPaths, "/E_innocuum_labeled_groundTruth.pdf"
        plot = einnocPlot, width = 11, height = 8.5, units = "in")
 ```
 
-
 ### Run Statistics
 
 ```{r run-statistics-on-taxaAbundance, eval=FALSE}
@@ -280,56 +278,5 @@ ggsave(filename = here("../analysis/figures/16S/Lachnospiraceae_abundance.pdf"),
 write_xlsx(x = lachnoDunnsRes,
            path = here("../analysis/results/16S/Lachnospiraceae_dunnPostHoc_results.xlsx"))
 ```
-
-
-
-```{r t-test-code, include=FALSE, eval=FALSE}
-neutroMean <- base::mean(clostridiumNeutropenic$delta_change) 
-neutroCI <- t.test(clostridiumNeutropenic$delta_change)
-neutroLower <- neutroCI$conf.int[1]
-neutroUpper <- neutroCI$conf.int[2]
-
-clostridiumNeutroFinal <- data.frame("category" = "Neutropenic",
-                                     "n" = nrow(clostridiumNeutropenic),
-                                     "mean" = neutroMean,
-                                     "lower" = neutroLower,
-                                     "upper" = neutroUpper)
-
-controlMean <- base::mean(clostridiumControl$delta_change)
-controlCI <- t.test(clostridiumControl$delta_change)
-controlLower <- controlCI$conf.int[1]
-controlUpper <- controlCI$conf.int[2]
-
-clostridiumControlFinal <- data.frame("category" = "Control",
-                                      "n" = nrow(clostridiumControl),
-                                     "mean" = controlMean,
-                                     "lower" = controlLower,
-                                     "upper" = controlUpper)
-
-clostridiumFPDataFinal <- rbind(clostridiumNeutroFinal,
-                                clostridiumControlFinal)
-
-plot <- ggplot(clostridiumFPDataFinal,
-               aes(y = category)) +
-  theme_classic() +
-  geom_point(aes(x = mean, size = n), shape = 15) +
-  scale_size_continuous(range = c(3, 6)) +
-  #geom_linerange(aes(xmin = lower, xmax = upper))+
-  geom_errorbar(aes(xmin = lower, xmax = upper), width = 0.125) +
-  geom_vline(xintercept = 0, linetype = "dashed") +
-  coord_cartesian(ylim = c(1, 2.3)) +
-  annotate("text", x = -500, y = 2.5, label = "Control", size = 4) +
-  annotate("text", x = 750, y = 2.5, label = "Neutropenic", size = 4) +
-  ggtitle("Average Change in Abundance of Clostridium innoccum") +
-  labs(x = "Change in Abundance (Pre - Post) and 95% CI",
-       y = "Group") +
-  theme(legend.position = "none",
-        axis.text = element_text(size = 12),
-        axis.title = element_text(size = 14),
-        plot.title = element_text(hjust = 0.5, size = 14))
-plot
-```
-
-
 
 
